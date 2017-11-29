@@ -22,6 +22,7 @@ from torchvision import datasets, models, transforms
 import matplotlib.pyplot as plt
 import time
 import os
+import operator
 
 plt.ion()   # interactive mode
 
@@ -71,8 +72,6 @@ print("TRAIN SIZE = %d" % dataset_sizes['train'])
 print("VAL SIZE = %d" % dataset_sizes['val'])
 
 class_names = image_datasets['train'].classes
-
-use_gpu = torch.cuda.is_available()
 
 ######################################################################
 # Visualize a few images
@@ -137,17 +136,15 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
             running_loss = 0.0
             running_corrects = 0
 
+            confidence = {} 
+
             # Iterate over data.
             for data in dataloaders[phase]:
                 # get the inputs
                 inputs, labels = data
 
                 # wrap them in Variable
-                if use_gpu:
-                    inputs = Variable(inputs.cuda())
-                    labels = Variable(labels.cuda())
-                else:
-                    inputs, labels = Variable(inputs), Variable(labels)
+                inputs, labels = Variable(inputs), Variable(labels)
 
                 # zero the parameter gradients
                 optimizer.zero_grad()
@@ -156,6 +153,21 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                 outputs = model(inputs)
                 _, preds = torch.max(outputs.data, 1)
                 loss = criterion(outputs, labels)
+
+                ################################################
+                # TEST
+                softmaxModel = nn.Softmax()
+                outputProb = softmaxModel(Variable(outputs.data))
+                # print(outputProb)
+
+                scores, preds_softmax = torch.max(outputProb.data, 1)
+                print("PROB: ", scores)
+                batch_size = 4
+                for i in range(batch_size):
+                    print("SCORE:", scores[i])
+                    confidence[inputs[i]] = scores[i]
+                # print("CONFIDENCE LIST:", confidence)
+                ################################################
 
                 # backward + optimize only if in training phase
                 if phase == 'train':
@@ -202,10 +214,7 @@ def visualize_model(model, num_images=6):
 
     for i, data in enumerate(dataloaders['val']):
         inputs, labels = data
-        if use_gpu:
-            inputs, labels = Variable(inputs.cuda()), Variable(labels.cuda())
-        else:
-            inputs, labels = Variable(inputs), Variable(labels)
+        inputs, labels = Variable(inputs), Variable(labels)
 
         outputs = model(inputs)
         _, preds = torch.max(outputs.data, 1)
@@ -231,9 +240,6 @@ model_ft = models.resnet18(pretrained=True)
 num_ftrs = model_ft.fc.in_features
 model_ft.fc = nn.Linear(num_ftrs, 2)
 
-if use_gpu:
-    model_ft = model_ft.cuda()
-
 criterion = nn.CrossEntropyLoss()
 
 # Observe that all parameters are being optimized
@@ -241,7 +247,6 @@ optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
 
 # Decay LR by a factor of 0.1 every 7 epochs
 exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
-# exp_lr_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer_ft, 'min')
 
 ######################################################################
 # Train and evaluate
@@ -255,6 +260,122 @@ model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
                        num_epochs=25)
 
 ######################################################################
-#
 
 visualize_model(model_ft)
+plt.ioff()
+plt.show()
+
+######################################################################
+# Begin hard data mining
+
+# Load large database of unlabeled data
+data_transforms_unlabeled = { transforms.Compose([
+        transforms.Scale(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
+}
+
+data_dir = 'facesData'
+image_dataset_unlabeled = datasets.ImageFolder(os.path.join(data_dir, 'unlabeled'),
+                                          data_transforms_unlabeled)
+dataloader_unlabeled = torch.utils.data.DataLoader(image_dataset_unlabeled, batch_size=4,
+                                             shuffle=True, num_workers=4)
+dataset_size_unlabeled = len(image_dataset_unlabeled)
+dataloader_unlabeled = torch.utils.data.DataLoader(image_dataset_unlabeled, batch_size=4,
+                                             shuffle=True, num_workers=4)
+
+######################################################################
+# Run current model over unlabeled data and get confidence of each classification
+
+def getConfidence(model):
+    # Iterate over data.
+    confidence = {}
+    for data in dataloader_unlabeled:
+        # get the inputs
+        inputs, __ = data
+
+        # wrap them in Variable
+        inputs = Variable(inputs)
+
+        # Output of trained model
+        outputs = model(inputs)
+
+        # Find confidence (probability) of classification
+        softmaxModel = nn.Softmax()
+        outputProb = softmaxModel(Variable(outputs.data))
+        # print(outputProb)
+
+        scores, preds_softmax = torch.max(outputProb.data, 1)
+        print("PROB: ", scores)
+        batch_size = 4
+        for i in range(batch_size):
+            print("SCORE:", scores[i])
+            # confidence[inputs[i]] = (scores[i], preds_softmax[i]) # store each input's (confidence, prediction)
+            # Each key is a tuple (image, label)
+            confidence[(inputs[i], preds_softmax[i])] = scores[i] 
+
+        ## END TEST
+    return confidence
+
+######################################################################
+# Sort the confidence scores to find the images the model is least sure of its classification
+
+def sortScores(scores, k):
+    # Returns a list of sorted keys (ie images) based on ascending confidence scores 
+    sortedInputs = sorted(scores, key=scores.get) 
+
+    # Select number of least confident images (ie difficult images for the model to classify) 
+    leastConfident = sortedInputs[0:k]
+    return leastConfident
+
+######################################################################
+# Visualize the least confident images and show the model's prediction for them
+
+def visualizeConfidence(leastConfident, num_images):
+    images_so_far = 0
+    fig = plt.figure()
+
+    for data in leastConfident:
+        image, prediction = data
+        images_so_far += 1
+        ax = plt.subplot(num_images//3, 2, images_so_far)
+        ax.axis('off')
+        ax.set_title('predicted: {}'.format(class_names[prediction]))
+        imshow(image.cpu().data[j])
+######################################################################
+# Append the ambiguous data with correct labels into the training set
+def appendData():
+    
+
+######################################################################
+# Train model on ambiguous data with correct labels
+def retrain(model, criterion, optimizer, scheduler, num_epochs=25):
+    for data in leastConfident:
+        image, label = data
+        # wrap them in Variable
+        image, label = Variable(image), Variable(label)
+
+        # zero the parameter gradients
+        optimizer.zero_grad()
+
+        # forward
+        outputs = model(inputs)
+        _, preds = torch.max(outputs.data, 1)
+        loss = criterion(outputs, labels)
+
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.data[0]
+
+######################################################################
+# Add ambiguous inputs to the training set
+def addDataExamples(model):
+    confidenceScores = getConfidence(model)
+    k = 15
+    leastConfident = sortScores(confidenceScores, k)
+    visualizeConfidence(leastConfident, k)
+    trainModel(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
+                       num_epochs=25)
+addDataExamples(model_ft)
