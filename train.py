@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import time
 import os
 import operator
+import cv2
 
 plt.ion()   # interactive mode
 
@@ -46,13 +47,20 @@ plt.ion()   # interactive mode
 data_transforms = {
     'train': transforms.Compose([
         transforms.Scale(256),
-        transforms.RandomSizedCrop(224),
+        transforms.RandomCrop(224),
+
+        # transforms.RandomSizedCrop(224),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
+    'unlabeled': transforms.Compose([
+        transforms.Scale(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
     'val': transforms.Compose([
-        # transforms.Resize(256),
         transforms.Scale(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
@@ -63,11 +71,11 @@ data_transforms = {
 data_dir = 'facesData'
 image_datasets = {x: datasets.ImageFolder(os.path.join(data_dir, x),
                                           data_transforms[x])
-                  for x in ['train', 'val']}
+                  for x in ['train', 'val', 'unlabeled']}
 dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=4,
                                              shuffle=True, num_workers=4)
-              for x in ['train', 'val']}
-dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
+              for x in ['train', 'val', 'unlabeled']}
+dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val', 'unlabeled']}
 print("TRAIN SIZE = %d" % dataset_sizes['train'])
 print("VAL SIZE = %d" % dataset_sizes['val'])
 
@@ -115,7 +123,7 @@ imshow(out, title=[class_names[x] for x in classes])
 # ``torch.optim.lr_scheduler``.
 
 
-def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
+def train_model(model, criterion, optimizer, scheduler, num_epochs):
     since = time.time()
 
     best_model_wts = model.state_dict()
@@ -136,13 +144,10 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
             running_loss = 0.0
             running_corrects = 0
 
-            confidence = {} 
-
             # Iterate over data.
             for data in dataloaders[phase]:
                 # get the inputs
                 inputs, labels = data
-
                 # wrap them in Variable
                 inputs, labels = Variable(inputs), Variable(labels)
 
@@ -152,20 +157,22 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                 # forward
                 outputs = model(inputs)
                 _, preds = torch.max(outputs.data, 1)
+                # print(outputs.size())
+                # print(labels.size())
                 loss = criterion(outputs, labels)
 
                 ################################################
-                # TEST
-                softmaxModel = nn.Softmax()
-                outputProb = softmaxModel(Variable(outputs.data))
-                # print(outputProb)
+                # # TEST
+                # softmaxModel = nn.Softmax()
+                # outputProb = softmaxModel(Variable(outputs.data))
+                # # print(outputProb)
 
-                scores, preds_softmax = torch.max(outputProb.data, 1)
-                print("PROB: ", scores)
-                batch_size = 4
-                for i in range(batch_size):
-                    print("SCORE:", scores[i])
-                    confidence[inputs[i]] = scores[i]
+                # scores, preds_softmax = torch.max(outputProb.data, 1)
+                # print("PROB: ", scores)
+                # batch_size = 4
+                # for i in range(batch_size):
+                #     print("SCORE:", scores[i])
+                #     confidence[inputs[i]] = scores[i]
                 # print("CONFIDENCE LIST:", confidence)
                 ################################################
 
@@ -257,7 +264,8 @@ exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
 #
 
 model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                       num_epochs=25)
+                       num_epochs=1)
+                       # num_epochs=25)
 
 ######################################################################
 
@@ -268,31 +276,15 @@ plt.show()
 ######################################################################
 # Begin hard data mining
 
-# Load large database of unlabeled data
-data_transforms_unlabeled = { transforms.Compose([
-        transforms.Scale(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ]),
-}
-
-data_dir = 'facesData'
-image_dataset_unlabeled = datasets.ImageFolder(os.path.join(data_dir, 'unlabeled'),
-                                          data_transforms_unlabeled)
-dataloader_unlabeled = torch.utils.data.DataLoader(image_dataset_unlabeled, batch_size=4,
-                                             shuffle=True, num_workers=4)
-dataset_size_unlabeled = len(image_dataset_unlabeled)
-dataloader_unlabeled = torch.utils.data.DataLoader(image_dataset_unlabeled, batch_size=4,
-                                             shuffle=True, num_workers=4)
-
 ######################################################################
 # Run current model over unlabeled data and get confidence of each classification
 
 def getConfidence(model):
     # Iterate over data.
     confidence = {}
-    for data in dataloader_unlabeled:
+    model.train(False)  # Set model to evaluate mode
+
+    for data in dataloaders['unlabeled']:
         # get the inputs
         inputs, __ = data
 
@@ -308,22 +300,22 @@ def getConfidence(model):
         # print(outputProb)
 
         scores, preds_softmax = torch.max(outputProb.data, 1)
-        print("PROB: ", scores)
-        batch_size = 4
-        for i in range(batch_size):
-            print("SCORE:", scores[i])
+        # print("PROB: ", scores)
+        for i in range(inputs.size()[0]):
+            # print("SCORE:", scores[i])
             # confidence[inputs[i]] = (scores[i], preds_softmax[i]) # store each input's (confidence, prediction)
             # Each key is a tuple (image, label)
-            confidence[(inputs[i], preds_softmax[i])] = scores[i] 
+            confidence[(inputs[i].data, preds_softmax[i])] = scores[i].numpy() 
 
         ## END TEST
     return confidence
 
 ######################################################################
 # Sort the confidence scores to find the images the model is least sure of its classification
-
 def sortScores(scores, k):
-    # Returns a list of sorted keys (ie images) based on ascending confidence scores 
+    # Returns a list of tuples (ie images, preds) based on ascending confidence scores 
+    # sortedInputs = sorted(scores.items(), key=operator.itemgetter(1))
+   
     sortedInputs = sorted(scores, key=scores.get) 
 
     # Select number of least confident images (ie difficult images for the model to classify) 
@@ -332,30 +324,88 @@ def sortScores(scores, k):
 
 ######################################################################
 # Visualize the least confident images and show the model's prediction for them
+def collectData():
+    cv2.waitKey(0)
+    
+    while True:
+        try:
+            attractiveRating = int(raw_input("Attractive? (type 1) else (type 0)"))
+        except ValueError:
+            print("Please type either 1 for attractive or 0 for unattractive.")
+            continue
+        else:
+            if attractiveRating != 0 and attractiveRating != 1:
+                print("Please type either 1 for attractive or 0 for unattractive.")
+            else:
+                return attractiveRating
+
 
 def visualizeConfidence(leastConfident, num_images):
-    images_so_far = 0
-    fig = plt.figure()
-
+    corrected = []
     for data in leastConfident:
         image, prediction = data
-        images_so_far += 1
-        ax = plt.subplot(num_images//3, 2, images_so_far)
-        ax.axis('off')
-        ax.set_title('predicted: {}'.format(class_names[prediction]))
-        imshow(image.cpu().data[j])
-######################################################################
-# Append the ambiguous data with correct labels into the training set
-def appendData():
-    
+        out = torchvision.utils.make_grid(image)
+        fig = plt.figure()
+        imshow(out, title=[class_names[prediction.numpy()[0].astype(int)]])
+        correctLabel = collectData()
+        correctLabelTensor = torch.LongTensor(1)
+        correctLabelTensor.fill_(correctLabel)
+        corrected.append((image, correctLabelTensor))
+    return corrected
+    # images_so_far = 0
+    # fig = plt.figure()
+
+    # for data in leastConfident:
+    #     image, prediction = data
+    #     images_so_far += 1
+    #     ax = plt.subplot(num_images//2, 2, images_so_far)
+    #     ax.axis('off')
+    #     ax.set_title('predicted: {}'.format(class_names[prediction.numpy()[0].astype(int)]))
+    #     imshow(image.cpu())
 
 ######################################################################
 # Train model on ambiguous data with correct labels
-def retrain(model, criterion, optimizer, scheduler, num_epochs=25):
-    for data in leastConfident:
+def retrain(model, criterion, optimizer, scheduler, hardExamples):
+    scheduler.step()
+    model.train(True)  # Set model to training mode
+
+    for data in hardExamples:
         image, label = data
+        image = image.unsqueeze(0)
+
         # wrap them in Variable
         image, label = Variable(image), Variable(label)
+
+        # zero the parameter gradients
+        optimizer.zero_grad()
+
+        # forward
+        outputs = model(image)
+        _, preds = torch.max(outputs.data, 1)
+        # print(outputs.size())
+        # print(label)
+        # print(label.size())
+        loss = criterion(outputs, label)
+        loss.backward()
+        optimizer.step()
+    return model
+
+
+######################################################################
+# Run on validation set
+def checkAccuracy(model, criterion, optimizer, scheduler):
+    best_model_wts = model.state_dict()
+    model.train(False)  # Set model to evaluate mode
+
+    running_loss = 0.0
+    running_corrects = 0
+
+    # Iterate over data.
+    for data in dataloaders['val']:
+        # get the inputs
+        inputs, labels = data
+        # wrap them in Variable
+        inputs, labels = Variable(inputs), Variable(labels)
 
         # zero the parameter gradients
         optimizer.zero_grad()
@@ -365,17 +415,31 @@ def retrain(model, criterion, optimizer, scheduler, num_epochs=25):
         _, preds = torch.max(outputs.data, 1)
         loss = criterion(outputs, labels)
 
-        loss.backward()
-        optimizer.step()
+        # statistics
         running_loss += loss.data[0]
+        running_corrects += torch.sum(preds == labels.data)
+
+    loss = running_loss / dataset_sizes['val']
+    acc = running_corrects / dataset_sizes['val']
+
+    print('{} Loss: {:.4f} Acc: {:.4f}'.format(
+        'val', loss, acc))
 
 ######################################################################
 # Add ambiguous inputs to the training set
-def addDataExamples(model):
-    confidenceScores = getConfidence(model)
-    k = 15
+def addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler):
+    confidenceScores = getConfidence(model_ft)
+    print('Model run on unlabeled set')
+    print('-' * 10)
+    k = 10
     leastConfident = sortScores(confidenceScores, k)
-    visualizeConfidence(leastConfident, k)
-    trainModel(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                       num_epochs=25)
-addDataExamples(model_ft)
+    print('Confidence sorted')
+    print('-' * 10)
+    correctedExamples = visualizeConfidence(leastConfident, k)
+    model_ft = retrain(model_ft, criterion, optimizer_ft, exp_lr_scheduler, correctedExamples)
+    print('Finished retraining')
+    print('-' * 10)
+    checkAccuracy(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+
+addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+
