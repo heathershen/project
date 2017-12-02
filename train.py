@@ -56,11 +56,18 @@ data_transforms = {
     ]),
     'unlabeled': transforms.Compose([
         transforms.Scale(256),
-        transforms.CenterCrop(224),
+        transforms.RandomCrop(224),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
     'val': transforms.Compose([
+        transforms.Scale(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
+    'test': transforms.Compose([
         transforms.Scale(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
@@ -71,11 +78,11 @@ data_transforms = {
 data_dir = 'facesData'
 image_datasets = {x: datasets.ImageFolder(os.path.join(data_dir, x),
                                           data_transforms[x])
-                  for x in ['train', 'val', 'unlabeled']}
+                  for x in ['train', 'val', 'unlabeled', 'test']}
 dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=4,
                                              shuffle=True, num_workers=4)
-              for x in ['train', 'val', 'unlabeled']}
-dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val', 'unlabeled']}
+              for x in ['train', 'val', 'unlabeled', 'test']}
+dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val', 'unlabeled', 'test']}
 print("TRAIN SIZE = %d" % dataset_sizes['train'])
 print("VAL SIZE = %d" % dataset_sizes['val'])
 
@@ -112,16 +119,6 @@ imshow(out, title=[class_names[x] for x in classes])
 ######################################################################
 # Training the model
 # ------------------
-#
-# Now, let's write a general function to train a model. Here, we will
-# illustrate:
-#
-# -  Scheduling the learning rate
-# -  Saving the best model
-#
-# In the following, parameter ``scheduler`` is an LR scheduler object from
-# ``torch.optim.lr_scheduler``.
-
 
 def train_model(model, criterion, optimizer, scheduler, num_epochs):
     since = time.time()
@@ -160,21 +157,6 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs):
                 # print(outputs.size())
                 # print(labels.size())
                 loss = criterion(outputs, labels)
-
-                ################################################
-                # # TEST
-                # softmaxModel = nn.Softmax()
-                # outputProb = softmaxModel(Variable(outputs.data))
-                # # print(outputProb)
-
-                # scores, preds_softmax = torch.max(outputProb.data, 1)
-                # print("PROB: ", scores)
-                # batch_size = 4
-                # for i in range(batch_size):
-                #     print("SCORE:", scores[i])
-                #     confidence[inputs[i]] = scores[i]
-                # print("CONFIDENCE LIST:", confidence)
-                ################################################
 
                 # backward + optimize only if in training phase
                 if phase == 'train':
@@ -236,45 +218,6 @@ def visualize_model(model, num_images=6):
             if images_so_far == num_images:
                 return
 
-######################################################################
-# Finetuning the convnet
-# ----------------------
-#
-# Load a pretrained model and reset final fully connected layer.
-#
-
-model_ft = models.resnet18(pretrained=True)
-num_ftrs = model_ft.fc.in_features
-model_ft.fc = nn.Linear(num_ftrs, 2)
-
-criterion = nn.CrossEntropyLoss()
-
-# Observe that all parameters are being optimized
-optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
-
-# Decay LR by a factor of 0.1 every 7 epochs
-exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
-
-######################################################################
-# Train and evaluate
-# ^^^^^^^^^^^^^^^^^^
-#
-# It should take around 15-25 min on CPU. On GPU though, it takes less than a
-# minute.
-#
-
-model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                       num_epochs=1)
-                       # num_epochs=25)
-
-######################################################################
-
-visualize_model(model_ft)
-plt.ioff()
-plt.show()
-
-######################################################################
-# Begin hard data mining
 
 ######################################################################
 # Run current model over unlabeled data and get confidence of each classification
@@ -284,7 +227,7 @@ def getConfidence(model):
     confidence = {}
     model.train(False)  # Set model to evaluate mode
 
-    for data in dataloaders['unlabeled']:
+    for i, data in enumerate(dataloaders['unlabeled']):
         # get the inputs
         inputs, __ = data
 
@@ -305,7 +248,18 @@ def getConfidence(model):
             # print("SCORE:", scores[i])
             # confidence[inputs[i]] = (scores[i], preds_softmax[i]) # store each input's (confidence, prediction)
             # Each key is a tuple (image, label)
-            confidence[(inputs[i].data, preds_softmax[i])] = scores[i].numpy() 
+
+            # isLabeled = False
+            # for image in labeledImages:
+            #     if torch.equal(inputs[i].data, image): 
+            #         isLabeled = True
+            #         break
+            # if isLabeled: continue
+
+            # Image path
+            imgPathTuple = image_datasets['unlabeled'].imgs[i]
+
+            confidence[(imgPathTuple, inputs[i].data, preds_softmax[i])] = scores[i].numpy() 
 
         ## END TEST
     return confidence
@@ -313,14 +267,17 @@ def getConfidence(model):
 ######################################################################
 # Sort the confidence scores to find the images the model is least sure of its classification
 def sortScores(scores, k):
-    # Returns a list of tuples (ie images, preds) based on ascending confidence scores 
-    # sortedInputs = sorted(scores.items(), key=operator.itemgetter(1))
-   
+    # Returns a list of tuples (ie images, preds) based on ascending confidence scores    
     sortedInputs = sorted(scores, key=scores.get) 
 
     # Select number of least confident images (ie difficult images for the model to classify) 
     leastConfident = sortedInputs[0:k]
     return leastConfident
+
+######################################################################
+def removeFromDataset(leastConfident):
+    for imgPathTuple, image, pred in leastConfident:
+        image_datasets['unlabeled'].imgs.remove(imgPathTuple)
 
 ######################################################################
 # Visualize the least confident images and show the model's prediction for them
@@ -343,56 +300,20 @@ def collectData():
 def visualizeConfidence(leastConfident, num_images):
     corrected = []
     for data in leastConfident:
-        image, prediction = data
+        imgPathTuple, image, prediction = data
         out = torchvision.utils.make_grid(image)
         fig = plt.figure()
         imshow(out, title=[class_names[prediction.numpy()[0].astype(int)]])
         correctLabel = collectData()
         correctLabelTensor = torch.LongTensor(1)
         correctLabelTensor.fill_(correctLabel)
-        corrected.append((image, correctLabelTensor))
+        imgPathTuple = (imgPathTuple[0], correctLabelTensor)
+        corrected.append(imgPathTuple)
+        plt.close()
     return corrected
-    # images_so_far = 0
-    # fig = plt.figure()
-
-    # for data in leastConfident:
-    #     image, prediction = data
-    #     images_so_far += 1
-    #     ax = plt.subplot(num_images//2, 2, images_so_far)
-    #     ax.axis('off')
-    #     ax.set_title('predicted: {}'.format(class_names[prediction.numpy()[0].astype(int)]))
-    #     imshow(image.cpu())
 
 ######################################################################
-# Train model on ambiguous data with correct labels
-def retrain(model, criterion, optimizer, scheduler, hardExamples):
-    scheduler.step()
-    model.train(True)  # Set model to training mode
-
-    for data in hardExamples:
-        image, label = data
-        image = image.unsqueeze(0)
-
-        # wrap them in Variable
-        image, label = Variable(image), Variable(label)
-
-        # zero the parameter gradients
-        optimizer.zero_grad()
-
-        # forward
-        outputs = model(image)
-        _, preds = torch.max(outputs.data, 1)
-        # print(outputs.size())
-        # print(label)
-        # print(label.size())
-        loss = criterion(outputs, label)
-        loss.backward()
-        optimizer.step()
-    return model
-
-
-######################################################################
-# Run on validation set
+# Run on test set
 def checkAccuracy(model, criterion, optimizer, scheduler):
     best_model_wts = model.state_dict()
     model.train(False)  # Set model to evaluate mode
@@ -401,7 +322,7 @@ def checkAccuracy(model, criterion, optimizer, scheduler):
     running_corrects = 0
 
     # Iterate over data.
-    for data in dataloaders['val']:
+    for data in dataloaders['test']:
         # get the inputs
         inputs, labels = data
         # wrap them in Variable
@@ -419,27 +340,108 @@ def checkAccuracy(model, criterion, optimizer, scheduler):
         running_loss += loss.data[0]
         running_corrects += torch.sum(preds == labels.data)
 
-    loss = running_loss / dataset_sizes['val']
-    acc = running_corrects / dataset_sizes['val']
+    loss = running_loss / dataset_sizes['test']
+    acc = running_corrects / dataset_sizes['test']
 
     print('{} Loss: {:.4f} Acc: {:.4f}'.format(
-        'val', loss, acc))
+        'test', loss, acc))
+    return acc
 
 ######################################################################
 # Add ambiguous inputs to the training set
 def addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler):
+    # Find confidence of scores
     confidenceScores = getConfidence(model_ft)
     print('Model run on unlabeled set')
     print('-' * 10)
-    k = 10
+    k = 20
+
+    # Select k number of images that the model is least confident about and remove them 
+    # from the unlabeled dataset
     leastConfident = sortScores(confidenceScores, k)
+    # removeFromDataset(leastConfident)
     print('Confidence sorted')
     print('-' * 10)
+
+    # Correct any misclassifications and add the new images to the training set
     correctedExamples = visualizeConfidence(leastConfident, k)
-    model_ft = retrain(model_ft, criterion, optimizer_ft, exp_lr_scheduler, correctedExamples)
+    for example in correctedExamples:
+        # dataloaders['train'].dataset.imgs is the list of (image path, class_index) tuples
+        dataloaders['train'].dataset.imgs.append(example)
+
+    # Retrain the model on the dataset
+    dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val', 'unlabeled', 'test']}
+    print("TRAIN SIZE = %d" % dataset_sizes['train'])
+
+    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
+                       num_epochs=2)
+    # model_ft = retrain(model_ft, criterion, optimizer_ft, exp_lr_scheduler, correctedExamples, numEpochs = 5)
     print('Finished retraining')
     print('-' * 10)
-    checkAccuracy(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+    
+    # Check accuracy on test set
+    accuracy = checkAccuracy(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+    return labeledImages, accuracy
 
-addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+######################################################################
+# MAIN
 
+
+# Finetuning the convnet
+# ----------------------
+#
+# Load a pretrained model and reset final fully connected layer.
+#
+
+model_ft = models.resnet18(pretrained=True)
+num_ftrs = model_ft.fc.in_features
+model_ft.fc = nn.Linear(num_ftrs, 2)
+
+criterion = nn.CrossEntropyLoss()
+
+# Observe that all parameters are being optimized
+optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+
+# Decay LR by a factor of 0.1 every 7 epochs
+exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
+
+
+# Train and evaluate
+# ^^^^^^^^^^^^^^^^^^
+print('==========INITIAL TRAINING==========')
+print()
+model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
+                       num_epochs=10)
+                       # num_epochs=25)
+
+visualize_model(model_ft)
+plt.ioff()
+plt.show()
+plt.savefig('preds_initial.png')
+print()
+print('==========INITIAL TRAINING FINISHED==========')
+print()
+######################################################################
+# Data mining until we are satisfied with our accuracy
+accuracyHistory = []
+acc = checkAccuracy(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+accuracyHistory.append(acc)
+
+labeledImages = []
+while acc < 0.90:
+    criterion = nn.CrossEntropyLoss()
+
+    # Observe that all parameters are being optimized
+    optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+
+    # Decay LR by a factor of 0.1 every 7 epochs
+    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
+
+    labeledImages, acc = addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+    accuracyHistory.append(acc)
+
+plt.plot(range(len(accuracyHistory)), accuracyHistory)
+plt.xlabel('Iterations')
+plt.ylabel('Accuracy')
+plt.show()
+plt.savefig('acc_iters.jpg')
