@@ -24,6 +24,7 @@ import time
 import os
 import operator
 import cv2
+import csv
 
 plt.ion()   # interactive mode
 
@@ -197,11 +198,11 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs):
 # Generic function to display predictions for a few images
 #
 
-def visualize_model(model, num_images=6):
+def visualize_model(model, num_images, phase):
     images_so_far = 0
     fig = plt.figure()
 
-    for i, data in enumerate(dataloaders['val']):
+    for i, data in enumerate(dataloaders[phase]):
         inputs, labels = data
         inputs, labels = Variable(inputs), Variable(labels)
 
@@ -256,7 +257,7 @@ def getConfidence(model):
             #         break
             # if isLabeled: continue
 
-            # Image path
+            # Image path tuple
             imgPathTuple = image_datasets['unlabeled'].imgs[i]
 
             confidence[(imgPathTuple, inputs[i].data, preds_softmax[i])] = scores[i].numpy() 
@@ -277,7 +278,8 @@ def sortScores(scores, k):
 ######################################################################
 def removeFromDataset(leastConfident):
     for imgPathTuple, image, pred in leastConfident:
-        image_datasets['unlabeled'].imgs.remove(imgPathTuple)
+        if imgPathTuple in image_datasets['unlabeled'].imgs:
+            image_datasets['unlabeled'].imgs.remove(imgPathTuple)
 
 ######################################################################
 # Visualize the least confident images and show the model's prediction for them
@@ -359,7 +361,7 @@ def addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler):
     # Select k number of images that the model is least confident about and remove them 
     # from the unlabeled dataset
     leastConfident = sortScores(confidenceScores, k)
-    # removeFromDataset(leastConfident)
+    removeFromDataset(leastConfident)
     print('Confidence sorted')
     print('-' * 10)
 
@@ -374,14 +376,14 @@ def addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler):
     print("TRAIN SIZE = %d" % dataset_sizes['train'])
 
     model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                       num_epochs=2)
+                       num_epochs=1)
     # model_ft = retrain(model_ft, criterion, optimizer_ft, exp_lr_scheduler, correctedExamples, numEpochs = 5)
     print('Finished retraining')
     print('-' * 10)
     
     # Check accuracy on test set
     accuracy = checkAccuracy(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
-    return labeledImages, accuracy
+    return accuracy
 
 ######################################################################
 # MAIN
@@ -410,11 +412,11 @@ exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
 # ^^^^^^^^^^^^^^^^^^
 print('==========INITIAL TRAINING==========')
 print()
-model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
-                       num_epochs=10)
+# model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
+                       # num_epochs=1)
                        # num_epochs=25)
 
-visualize_model(model_ft)
+visualize_model(model_ft, 6, 'val')
 plt.ioff()
 plt.show()
 plt.savefig('preds_initial.png')
@@ -427,8 +429,7 @@ accuracyHistory = []
 acc = checkAccuracy(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
 accuracyHistory.append(acc)
 
-labeledImages = []
-while acc < 0.90:
+while acc < 0.5:
     criterion = nn.CrossEntropyLoss()
 
     # Observe that all parameters are being optimized
@@ -437,11 +438,19 @@ while acc < 0.90:
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
 
-    labeledImages, acc = addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
+    acc = addDataExamples(model_ft, criterion, optimizer_ft, exp_lr_scheduler)
     accuracyHistory.append(acc)
+
+# Save model
+trainedModelWeights = model_ft.state_dict()
+torch.save(model_ft.state_dict(), 'savedModel.pt')
+# with open('modelWeights.csv', 'wb') as f:  # Just use 'w' mode in 3.x
+#     w = csv.DictWriter(f, trainedModelWeights.keys())
+#     w.writeheader()
+#     w.writerow(trainedModelWeights)
+# visualize_model(model_ft, 6, 'unlabeled')
 
 plt.plot(range(len(accuracyHistory)), accuracyHistory)
 plt.xlabel('Iterations')
 plt.ylabel('Accuracy')
-plt.show()
 plt.savefig('acc_iters.jpg')
